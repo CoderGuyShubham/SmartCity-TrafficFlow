@@ -3,7 +3,7 @@
 
 ## Description
 
-This project aims to develop an intelligent traffic signal controller (ITSC) using the open-source computer vision library OpenCV. The system will analyze video footage from cameras to detect vehicles and traffic lights, track their movement, and dynamically adjust signal timings to optimize traffic flow and improve safety at intersections.
+This project focuses on creating an Intelligent Traffic Signal Controller (ITSC) using the open-source computer vision library OpenCV. It processes video feeds from cameras to identify vehicles and traffic lights, monitor their movement, and automatically adjust signal timings in real time to enhance traffic flow and improve safety at intersections.
 
 ## Components
 
@@ -33,16 +33,3 @@ This project aims to develop an intelligent traffic signal controller (ITSC) usi
 ## Note
 
 This is a simplified example. A real-world ITSC deployment requires extensive planning, engineering expertise, adherence to safety regulations, and collaboration with relevant authorities.
-
-## Contributing
-
-If you're interested in contributing to this project, please:
-
-* Fork the repository
-* Create a new branch for your changes
-* Submit a pull request with a clear description of your modifications
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for details.
-
