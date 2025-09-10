@@ -1,161 +1,122 @@
 import cv2
 import numpy as np
+import time
 
-# Define HSV ranges for red, yellow, and green
-red_lower = np.array([170, 100, 100])
-red_upper = np.array([180, 255, 255])
-yellow_lower = np.array([20, 100, 100])
-yellow_upper = np.array([30, 255, 255])
-green_lower = np.array([70, 100, 100])
-green_upper = np.array([80, 255, 255])
-
-
-def track_vehicles(frame, previous_centroids):
-  # Convert to HSV for background subtraction
-  hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-  background_model = cv2.BackgroundSubtractorMOG2()  # Create background model
-  foreground = background_model.apply(hsv)
-
-  # Detect moving objects using foreground mask
-  thresh = cv2.threshold(foreground, 25, 255, cv2.THRESH_BINARY)[1]
-  kernel = np.ones((5, 5), np.uint8)
-  opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-  closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
-
-  # Find contours and update centroids
-  current_centroids = []
-  for contour in cv2.findContours(closing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
-    if cv2.contourArea(contour) > 500:
-      M = cv2.moments(contour)
-      cX = int(M["m10"] / M["m00"])
-      cY = int(M["m01"] / M["m00"])
-      current_centroids.append((cX, cY))
-
-      # Match with previous centroids (replace with Kalman filter for better tracking)
-      if previous_centroids is not None:
-        for i, (prevX, prevY) in enumerate(previous_centroids):
-          dist = ((cX - prevX) ** 2 + (cY - prevY) ** 2) ** 0.5
-          if dist < 50:  # Adjust threshold for matching distance
-            previous_centroids[i] = (cX, cY)
-            break
-
-  return frame, current_centroids
-
-# Load YOLO model
+# ------------------- Load YOLO -------------------
 net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
 with open("coco.names", "r") as f:
     classes = [line.strip() for line in f.readlines()]
-
 layer_names = net.getLayerNames()
 output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 
-vehicle_classes = ["car", "bus", "truck"]
+# Detect these classes
+vehicle_classes = ["car", "bus", "truck", "motorbike", "bicycle"]
+
 
 def detect_vehicles(frame):
     height, width, _ = frame.shape
-
-    # Create a blob from the frame
-    blob = cv2.dnn.blobFromImage(frame, 1/255, (416, 416), (0, 0, 0), swapRB=True, crop=False)
+    blob = cv2.dnn.blobFromImage(frame, 1/255, (416,416), (0,0,0), swapRB=True, crop=False)
     net.setInput(blob)
-
-    # Get output layer names
-    layer_names = net.getLayerNames()
-    output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
-
-    # Run forward pass
     outputs = net.forward(output_layers)
 
-    vehicles = []
-    confidences = []
-    boxes = []
-
+    vehicles, confidences, boxes, class_ids = [], [], [], []
     for output in outputs:
         for detection in output:
             scores = detection[5:]
             class_id = np.argmax(scores)
             confidence = scores[class_id]
-
-            # COCO class IDs for car=2, motorcycle=3, bus=5, truck=7
-            if class_id in [2, 3, 5, 7] and confidence > 0.5:
-                center_x = int(detection[0] * width)
-                center_y = int(detection[1] * height)
-                w = int(detection[2] * width)
-                h = int(detection[3] * height)
-
-                x = int(center_x - w / 2)
-                y = int(center_y - h / 2)
-
-                boxes.append([x, y, w, h])
+            if confidence > 0.5 and classes[class_id] in vehicle_classes:
+                center_x, center_y = int(detection[0]*width), int(detection[1]*height)
+                w, h = int(detection[2]*width), int(detection[3]*height)
+                x, y = int(center_x - w/2), int(center_y - h/2)
+                boxes.append([x,y,w,h])
                 confidences.append(float(confidence))
+                class_ids.append(class_id)
 
-    # Apply Non-Max Suppression to remove duplicates
     indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-
     for i in range(len(boxes)):
         if i in indexes:
-            x, y, w, h = boxes[i]
-            vehicles.append((x, y, w, h))
-            # Draw green bounding box
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, "Vehicle", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            x,y,w,h = boxes[i]
+            vehicles.append((x,y,w,h,class_ids[i]))
+            label = f"{classes[class_ids[i]]} {int(confidences[i]*100)}%"
+            cv2.rectangle(frame, (x,y), (x+w,y+h), (0,255,0), 2)
+            cv2.putText(frame, label, (x,y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
 
     return frame, vehicles
 
-def detect_traffic_lights(frame):
-  hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-  # Mask for each color
-  red_mask = cv2.inRange(hsv, red_lower, red_upper)
-  yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
-  green_mask = cv2.inRange(hsv, green_lower, green_upper)
+# ------------------- Load 4 Cameras -------------------
+cams = {
+    "North": cv2.VideoCapture("video.mp4"),
+    "East": cv2.VideoCapture("video2.mp4"),
+    "South": cv2.VideoCapture("video3.webm"),
+    "West": cv2.VideoCapture("video4.mp4")
+}
+for name in cams.keys():
+    cv2.namedWindow(name, cv2.WINDOW_NORMAL)
 
-  # Find contours for each color
-  red_contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-  yellow_contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-  green_contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-  # Draw contours and identify dominant color
-  for contour in red_contours:
-    if cv2.contourArea(contour) > 100:  # Adjust threshold for size
-      cv2.drawContours(frame, [contour], -1, (0, 0, 255), 2)
-      light_state = "RED"
-      break
-  else:
-    for contour in yellow_contours:
-      if cv2.contourArea(contour) > 100:
-        cv2.drawContours(frame, [contour], -1, (0, 255, 255), 2)
-        light_state = "YELLOW"
-        break
-    else:
-      for contour in green_contours:
-        
-        if cv2.contourArea(contour) > 100:
-          cv2.drawContours(frame, [contour], -1, (0, 255, 0), 2)
-          light_state = "GREEN"
-          break
-      else:
-        light_state = "UNKNOWN"
+# ------------------- Smart Controller -------------------
+cycle = ["North", "East", "South", "West"]
+idx = 0  # start with North
+green_start_time = time.time()
 
-  return frame, light_state
-cap = cv2.VideoCapture('video.mp4')
 
-if not cap.isOpened():
-    print("Error: Cannot open video source")
-    exit()
+def compute_green_time(count):
+    # Base time = 5 sec, 1 sec per 2 vehicles, max 30 sec
+    base = 5
+    extra = count // 2
+    return min(base + extra, 30)
+
 
 while True:
-    ret, frame = cap.read()
-    if not ret or frame is None:
-        print("Failed to grab frame. Check video path or camera connection.")
+    traffic_counts = {}
+
+    # Step 1: detect vehicles in all cameras
+    for direction, cap in cams.items():
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        frame, vehicles = detect_vehicles(frame)
+        traffic_counts[direction] = len(vehicles)
+
+        # Show vehicle count only
+        cv2.putText(frame, f"{direction} Vehicles: {len(vehicles)}", (20,40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+        cv2.imshow(direction, frame)
+
+    if not traffic_counts:
         break
 
-    frame, vehicles = detect_vehicles(frame)
-    resized_img = cv2.resize(frame, None, fx=0.2, fy=0.2)
-    cv2.imshow("Traffic Light Detection", resized_img)
-    print(f"Detected vehicles: {len(vehicles)}")
+    # Step 2: non-blocking timer for green signal
+    current_dir = cycle[idx]
+    count = traffic_counts.get(current_dir, 0)
+    green_time = compute_green_time(count)
+    elapsed = time.time() - green_start_time
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    if elapsed >= green_time:
+        # Move to next direction in cycle
+        idx = (idx + 1) % len(cycle)
+        current_dir = cycle[idx]
+        green_start_time = time.time()
+
+    # Step 3: print signals in console
+    print("-------------------------------------------------")
+    for d in cycle:
+        if d == current_dir:
+            remaining = max(0, int(green_time - elapsed))
+            print(f"🟢 {d}: GREEN for {remaining}s (Vehicles={traffic_counts.get(d,0)})")
+        else:
+            print(f"🔴 {d}: RED   (Vehicles={traffic_counts.get(d,0)})")
+    print("-------------------------------------------------")
+
+    # Quit on 'q'
+    if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-cap.release()
+
+# ------------------- Cleanup -------------------
+for cap in cams.values():
+    cap.release()
 cv2.destroyAllWindows()
